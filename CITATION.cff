@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+message: "If you use this artifact, please cite the paper below."
+title: "P-DEMOS artifact: reference prototype, Lean and EasyCrypt proofs"
+type: software
+version: 1.0.0
+license: MIT
+# TODO: add the Zenodo DOI once a release is archived
+repository-code: "https://github.com/thomas-souliotis-new/demos-artifacts"
+authors:
+  - family-names: Souliotis
+    given-names: Thomas
+    affiliation: "School of Electrical and Computer Engineering, National Technical University of Athens"
+keywords:
+  - e-voting
+  - end-to-end verifiability
+  - standard model
+  - Borda count
+  - Lean 4
+preferred-citation:
+  type: article
+  title: "P-DEMOS: End-to-End Verifiable Positional Voting in the Standard Model"
+  authors:
+    - family-names: Souliotis
+      given-names: Thomas
+      affiliation: "School of Electrical and Computer Engineering, National Technical University of Athens"
+  # TODO: add journal, year, volume and DOI after acceptance
+  status: submitted

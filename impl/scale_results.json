@@ -1,0 +1,101 @@
+{
+ "full": [
+  {
+   "n": 10,
+   "m": 5,
+   "verify_ok": true,
+   "correct": true,
+   "setup_ms_per_ballot": 61.8,
+   "tally_ms_per_ballot": 0.34,
+   "verify_ms_per_ballot": 39.2,
+   "wall_s": 1.0
+  },
+  {
+   "n": 1000,
+   "m": 5,
+   "verify_ok": true,
+   "correct": true,
+   "setup_ms_per_ballot": 62.1,
+   "tally_ms_per_ballot": 0.42,
+   "verify_ms_per_ballot": 40.5,
+   "wall_s": 103.0
+  }
+ ],
+ "tally": [
+  {
+   "n": 10,
+   "m": 5,
+   "x": 11,
+   "workers": 12,
+   "commit_and_aggregate_s": 0.2,
+   "open_verify_decode_s": 0.003,
+   "openings_valid": true,
+   "decoded_equals_truth": true,
+   "first_preferences": [
+    3,
+    4,
+    2,
+    1,
+    0
+   ],
+   "borda_scores": [
+    26,
+    29,
+    21,
+    14,
+    10
+   ],
+   "winner": "P2"
+  },
+  {
+   "n": 1000,
+   "m": 5,
+   "x": 1001,
+   "workers": 12,
+   "commit_and_aggregate_s": 0.4,
+   "open_verify_decode_s": 0.003,
+   "openings_valid": true,
+   "decoded_equals_truth": true,
+   "first_preferences": [
+    407,
+    252,
+    201,
+    85,
+    55
+   ],
+   "borda_scores": [
+    2805,
+    2416,
+    2156,
+    1480,
+    1143
+   ],
+   "winner": "P1"
+  },
+  {
+   "n": 1000000,
+   "m": 5,
+   "x": 1000001,
+   "workers": 12,
+   "commit_and_aggregate_s": 285.8,
+   "open_verify_decode_s": 0.003,
+   "openings_valid": true,
+   "decoded_equals_truth": true,
+   "first_preferences": [
+    383009,
+    266457,
+    200802,
+    95134,
+    54598
+   ],
+   "borda_scores": [
+    2780057,
+    2425098,
+    2157839,
+    1518182,
+    1118824
+   ],
+   "winner": "P1"
+  }
+ ]
+}

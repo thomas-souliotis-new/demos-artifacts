@@ -1,0 +1,641 @@
+(* -------------------------------------------------------------------- *)
+(* P-DEMOS, Lemma 2 (product-opening hiding), machine-checked.           *)
+(*                                                                      *)
+(* Paper: zkp.tex, Lemma "Product-opening hiding" (lem:product-hiding); *)
+(*        proof in appendix.tex, Appendix A.                            *)
+(* -------------------------------------------------------------------- *)
+require import AllCore List Distr DList DInterval DBool Finite StdBigop StdOrder.
+(*---*) import Bigreal.BRA.
+require import DiffieHellman.
+require (*--*) Means.
+
+(* The stdlib DiffieHellman theory fixes an abstract cyclic group G of   *)
+(* prime order q with generator g, exponents Z_q, and the DDH games.     *)
+import DDH G GP FD GP.ZModE.
+
+(* -------------------------------------------------------------------- *)
+(* Parameters: m = n + 1 candidates, the encoding set X (as a list xs),  *)
+(* and two permutations sigma0, sigma1 of X.                            *)
+op n : { int | 0 < n } as gt0_n.
+
+lemma ge0_n : 0 <= n by smt(gt0_n).
+
+op xs : exp list.
+axiom size_xs : size xs = n + 1.
+
+op sigma0 : exp list.
+op sigma1 : exp list.
+axiom perm_sigma0 : perm_eq sigma0 xs.
+axiom perm_sigma1 : perm_eq sigma1 xs.
+
+op sigma (b : bool) = if b then sigma1 else sigma0.
+
+(* -------------------------------------------------------------------- *)
+(* Sums in Z_q, and S = sum of X.                                       *)
+op esum (vs : exp list) : exp = BigZMod.BAdd.big predT idfun vs.
+
+lemma esum_nil : esum [] = zero.
+proof. by rewrite /esum BigZMod.BAdd.big_nil. qed.
+
+lemma esum_cons v vs : esum (v :: vs) = v + esum vs.
+proof. by rewrite /esum BigZMod.BAdd.big_cons. qed.
+
+lemma esum_rcons vs v : esum (rcons vs v) = esum vs + v.
+proof.
+elim: vs => [|w vs ih] /=; first by rewrite esum_cons esum_nil; ring.
+by rewrite !esum_cons ih; ring.
+qed.
+
+lemma esum_perm vs ws : perm_eq vs ws => esum vs = esum ws.
+proof. by move=> h; rewrite /esum (BigZMod.BAdd.eq_big_perm _ _ _ _ h). qed.
+
+op S : exp = esum xs.
+
+lemma size_sigma b : size (sigma b) = n + 1.
+proof. by case: b => _; rewrite /sigma /= (perm_eq_size _ xs) 1:(perm_sigma0, perm_sigma1) size_xs. qed.
+
+lemma esum_sigma b : esum (sigma b) = S.
+proof. by case: b => _; rewrite /sigma /S /=; apply esum_perm; rewrite (perm_sigma0, perm_sigma1). qed.
+
+(* -------------------------------------------------------------------- *)
+(* Lifted ElGamal commitments Com_h(v; r) = (g^r, g^v * h^r).           *)
+type com = group * group.
+
+op com (h : group) (v r : exp) : com = (g ^ r, g ^ v * h ^ r).
+
+op cmul (c d : com) : com = (c.`1 * d.`1, c.`2 * d.`2).
+op cinv (c : com) : com = (inv c.`1, inv c.`2).
+op cprod (cs : com list) : com = foldr cmul (e, e) cs.
+
+op coms (h : group) (vs rs : exp list) : com list =
+  map (fun (vr : exp * exp) => com h vr.`1 vr.`2) (zip vs rs).
+
+lemma com0 h : com h zero zero = (e, e).
+proof. by rewrite /com !exp0 mulc1. qed.
+
+lemma cmul_com h v r v' r' :
+  cmul (com h v r) (com h v' r') = com h (v + v') (r + r').
+proof.
+rewrite /cmul /com /= !expD; split => //.
+by rewrite -!mulcA; congr; rewrite mulcC -mulcA; congr; rewrite mulcC.
+qed.
+
+lemma cinv_com h v r : cinv (com h v r) = com h (-v) (-r).
+proof. by rewrite /cinv /com /= !expN invM mulcC. qed.
+
+lemma cprod_coms h vs rs :
+  size vs = size rs => cprod (coms h vs rs) = com h (esum vs) (esum rs).
+proof.
+elim: vs rs => [|v vs ih] [|r rs] /=; 2,3: smt(size_ge0).
++ by rewrite /coms /cprod /= esum_nil com0.
+move=> eq_sz; rewrite /cprod /coms /= -/(cprod _) -/(coms _ _ _).
+by rewrite ih 1:/# cmul_com !esum_cons.
+qed.
+
+lemma coms_rcons h vs rs v r :
+  size vs = size rs =>
+  coms h (rcons vs v) (rcons rs r) = rcons (coms h vs rs) (com h v r).
+proof. by move=> eq_sz; rewrite /coms zip_rcons // map_rcons. qed.
+
+(* -------------------------------------------------------------------- *)
+(* The distributions D_0 and D_1 of Lemma 2, as a game parameterised by *)
+(* b.  The adversary also sees the commitment key h.                    *)
+module type Adv = {
+  proc guess(h : group, cs : com list, rr : exp) : bool
+}.
+
+module D (A : Adv) = {
+  proc main(b : bool) : bool = {
+    var x, rs, b';
+
+    x  <$ dt;
+    rs <$ dlist dt (n + 1);
+    b' <@ A.guess(g ^ x, coms (g ^ x) (sigma b) rs, esum rs);
+    return b';
+  }
+}.
+
+(* Multi-message IND-CPA of lifted ElGamal on the first n = m-1 values. *)
+module type MAdv = {
+  proc guess(h : group, cs : com list) : bool
+}.
+
+module MCPA (B : MAdv) = {
+  proc main(b : bool) : bool = {
+    var x, rs, b';
+
+    x  <$ dt;
+    rs <$ dlist dt n;
+    b' <@ B.guess(g ^ x, coms (g ^ x) (take n (sigma b)) rs);
+    return b';
+  }
+}.
+
+(* The reduction of Appendix A: sample R, derive the last commitment    *)
+(* c_m = Com(S; R) / prod_{p<m} c_p, and run A.                         *)
+module BP (A : Adv) : MAdv = {
+  proc guess(h : group, cs : com list) : bool = {
+    var rr, cm, b';
+
+    rr <$ dt;
+    cm <- cmul (com h S rr) (cinv (cprod cs));
+    b' <@ A.guess(h, rcons cs cm, rr);
+    return b';
+  }
+}.
+
+section StepA.
+
+declare module A <: Adv.
+
+lemma split_last (l : exp list) k :
+  0 <= k => size l = k + 1 => l = rcons (take k l) (nth zero l k).
+proof.
+move=> ge0_k sz_l; rewrite -cats1 -{1}(cat_take_drop k l); congr.
+rewrite (drop_nth zero); 1: smt().
+by rewrite drop_oversize // sz_l.
+qed.
+
+lemma dprod_listE :
+     dlet (dlist dt n) (fun (rs : exp list) => dmap dt (fun (rr : exp) => (rs, rr)))
+   = dlist dt n `*` dt.
+proof. by rewrite dprod_dlet /dmap /(\o). qed.
+
+lemma sigma_split b :
+  sigma b = rcons (take n (sigma b)) (nth zero (sigma b) n).
+proof.
+rewrite -cats1 -{1}(cat_take_drop n (sigma b)); congr.
+rewrite (drop_nth zero); 1: smt(size_sigma gt0_n).
+by rewrite drop_oversize // size_sigma.
+qed.
+
+lemma last_value b :
+  S - esum (take n (sigma b)) = nth zero (sigma b) n.
+proof.
+by rewrite -(esum_sigma b) {1}sigma_split esum_rcons; ring.
+qed.
+
+lemma link h b rs rr :
+  size rs = n =>
+     coms h (sigma b) (rcons rs (rr - esum rs))
+   = rcons (coms h (take n (sigma b)) rs) (cmul (com h S rr) (cinv (cprod (coms h (take n (sigma b)) rs)))).
+proof.
+move=> sz_rs.
+have sz_t : size (take n (sigma b)) = size rs.
++ by rewrite size_take; smt(gt0_n size_sigma).
+rewrite cprod_coms // cinv_com cmul_com {1}sigma_split coms_rcons //.
+by congr; rewrite -last_value; congr; ring.
+qed.
+
+equiv D_MCPA : D(A).main ~ MCPA(BP(A)).main : ={b, glob A} ==> ={res}.
+proof.
+proc; inline BP(A).guess; swap{2} 5 -2.
+seq 1 1 : (={b, glob A, x}); first by auto.
+seq 1 2 : (={b, glob A, x} /\ size rs{2} = n /\ rs{1} = rcons rs{2} (rr{2} - esum rs{2})).
++ rndsem{2} 0.
+  rnd (fun l => (take n l, esum l))
+      (fun (p : exp list * exp) => rcons p.`1 (p.`2 - esum p.`1)).
+  skip => &1 &2 hpre; rewrite dprod_listE; split.
+  + case=> l r /supp_dprod /= [/(supp_dlist _ _ _ ge0_n) [sz_l _] _].
+    split; 2: by rewrite esum_rcons; ring.
+    by rewrite -cats1 take_cat sz_l /=; smt(take0 cats0).
+  move=> _; split.
+  + case=> l r /supp_dprod /= [/(supp_dlist _ _ _ ge0_n) [sz_l _] _].
+    rewrite dprod1E (dlist1E _ n) 1:ge0_n (dlist1E _ (n + 1)) 1:#smt:(ge0_n).
+    rewrite size_rcons sz_l /=.
+    by rewrite -cats1 Bigreal.BRM.big_cat Bigreal.BRM.big_seq1 /= !dt1E.
+  move=> _ l; rewrite supp_dlist 1:#smt:(ge0_n) => -[sz_l _].
+  have sz_t : size (take n l) = n by rewrite size_take; smt(gt0_n).
+  have E := split_last l n ge0_n sz_l.
+  have En : esum l - esum (take n l) = nth zero l n.
+  + by rewrite {1}E esum_rcons; ring.
+  rewrite supp_dprod /= supp_dlist 1:ge0_n sz_t /= En -E hpre /=.
+  by split; [rewrite allP => y _; apply dt_fu | apply dt_fu].
+wp; call (: true); auto => /> &2 sz_rs.
+by split; [rewrite link | rewrite esum_rcons; ring].
+qed.
+
+end section StepA.
+
+(* -------------------------------------------------------------------- *)
+(* Step B: multi-message IND-CPA => DDH, by a hybrid argument.          *)
+(* In hybrid k, the first k ciphertexts are replaced by uniform pairs   *)
+(* (g^r, g^u); the others are honest commitments.                        *)
+op hyb (h : group) (k : int) (vs rs us : exp list) : com list =
+  mkseq (fun i =>
+    if i < k then (g ^ nth zero rs i, g ^ nth zero us i)
+    else com h (nth zero vs i) (nth zero rs i)) n.
+
+(* What the DDH reduction builds from (gx, gy, gz), embedding the DDH    *)
+(* instance at position k.                                              *)
+op hybR (k : int) (gx gy gz : group) (vs rs us : exp list) : com list =
+  mkseq (fun i =>
+    if i < k then (g ^ nth zero rs i, g ^ nth zero us i)
+    else if i = k then (gy, g ^ nth zero vs i * gz)
+    else com gx (nth zero vs i) (nth zero rs i)) n.
+
+lemma coms_mkseq h vs rs :
+  size vs = n => size rs = n =>
+  coms h vs rs = mkseq (fun i => com h (nth zero vs i) (nth zero rs i)) n.
+proof.
+move=> sz_vs sz_rs; apply (eq_from_nth (e, e)).
++ by rewrite /coms size_map size_zip size_mkseq; smt(gt0_n).
+move=> i; rewrite /coms size_map size_zip sz_vs sz_rs /min /= => rg_i.
+rewrite nth_mkseq // (nth_map (zero, zero)) 1:size_zip 1:/#.
+by rewrite nth_zip 1:/#.
+qed.
+
+lemma hyb0 h vs rs us :
+  size vs = n => size rs = n => hyb h 0 vs rs us = coms h vs rs.
+proof.
+move=> sz_vs sz_rs; rewrite coms_mkseq //.
+by apply eq_in_mkseq => i rg_i /=; rewrite ltzNge (: 0 <= i) 1:/#.
+qed.
+
+lemma hyb_full h vs vs' rs us : hyb h n vs rs us = hyb h n vs' rs us.
+proof. by apply eq_in_mkseq => i rg_i /=; rewrite (: i < n) 1:/#. qed.
+
+lemma hop0_eq (x : exp) vs rs us y k :
+  0 <= k < n => size rs = n =>
+     hybR k (g ^ x) (g ^ nth zero rs k) (g ^ (x * nth zero rs k)) vs (put rs k y) us
+   = hyb (g ^ x) k vs rs us.
+proof.
+move=> rg_k sz_rs; apply eq_in_mkseq => i rg_i /=.
+rewrite nth_put 1:/#.
+case: (i < k) => [lt_ik | ge_ik]; first by rewrite (: k <> i) 1:/#.
+case: (i = k) => [->> | ne_ik] /=; last by rewrite (: k <> i) 1:/#.
+by rewrite /com expM.
+qed.
+
+lemma hop1_eq (x : exp) vs rs us y z k :
+  0 <= k < n => size rs = n => size us = n =>
+     hybR k (g ^ x) (g ^ nth zero rs k) (g ^ (nth zero us k - nth zero vs k))
+          vs (put rs k y) (put us k z)
+   = hyb (g ^ x) (k + 1) vs rs us.
+proof.
+move=> rg_k sz_rs sz_us; apply eq_in_mkseq => i rg_i /=.
+rewrite !nth_put 1,2:/#.
+case: (i < k) => [lt_ik | ge_ik]; first by rewrite (: k <> i) 1:/# (: i < k + 1) 1:/#.
+case: (i = k) => [->> | ne_ik] /=; last by rewrite (: k <> i) 1:/# (: !(i < k + 1)) 1:/#.
+rewrite (: k < k + 1) 1:/# /= -expD; congr; ring.
+qed.
+
+(* -------------------------------------------------------------------- *)
+(* Couplings: exchanging the k-th randomness with the DDH exponent.      *)
+op sw (k : int) (v : exp) (p : exp * exp list) : exp * exp list =
+  (nth zero p.`2 k, put p.`2 k (p.`1 + v)).
+
+op swi (k : int) (v : exp) (p : exp * exp list) : exp * exp list =
+  (nth zero p.`2 k - v, put p.`2 k p.`1).
+
+lemma put_put_nth (l : exp list) k a b :
+  0 <= k < size l => put (put l k a) k b = put l k b.
+proof.
+move=> rg_k; apply (eq_from_nth zero); first by rewrite !size_put.
+move=> i; rewrite !size_put => rg_i.
+by rewrite !nth_put ?size_put // /#.
+qed.
+
+lemma put_nth_id (l : exp list) k :
+  0 <= k < size l => put l k (nth zero l k) = l.
+proof.
+move=> rg_k; apply (eq_from_nth zero); first by rewrite !size_put.
+by move=> i; rewrite !size_put => rg_i; rewrite nth_put // /#.
+qed.
+
+lemma dpair_uni : is_uniform (dt `*` dlist dt n).
+proof. by apply dprod_uni; [apply funi_uni; apply dt_funi | apply dlist_uni; apply funi_uni; apply dt_funi]. qed.
+
+lemma supp_dpair (p : exp * exp list) : p \in dt `*` dlist dt n <=> size p.`2 = n.
+proof.
+rewrite supp_dprod supp_dlist 1:ge0_n; split => [/> | -> /=].
+by split; [apply dt_fu | rewrite allP => y _; apply dt_fu].
+qed.
+
+lemma sw_coupling k v :
+  0 <= k < n =>
+     (forall p, p \in dt `*` dlist dt n => sw k v (swi k v p) = p)
+  /\ (forall p, p \in dt `*` dlist dt n =>
+        mu1 (dt `*` dlist dt n) p = mu1 (dt `*` dlist dt n) (swi k v p))
+  /\ (forall p, p \in dt `*` dlist dt n =>
+        sw k v p \in dt `*` dlist dt n /\ swi k v (sw k v p) = p).
+proof.
+move=> rg_k; split; 2: split.
++ case=> a l /supp_dpair /= sz_l; rewrite /sw /swi /=.
+  rewrite nth_put 1:/# /= put_put_nth 1:/#.
+  have -> : nth zero l k - v + v = nth zero l k by ring.
+  by rewrite put_nth_id /#.
++ case=> a l /supp_dpair /= sz_l; apply dpair_uni.
+  + by rewrite supp_dpair.
+  by rewrite supp_dpair /swi /= size_put.
+case=> a l /supp_dpair /= sz_l; rewrite supp_dpair /sw /swi /= size_put sz_l /=.
+rewrite nth_put 1:/# /= put_put_nth 1:/# put_nth_id 1:/# /=; ring.
+qed.
+
+(* -------------------------------------------------------------------- *)
+(* Hybrid games and the DDH reduction.                                  *)
+module H (B : MAdv) = {
+  proc main(b : bool, k : int) : bool = {
+    var x, y, z, rs, us, b';
+
+    x  <$ dt;
+    y  <$ dt;          (* unused; aligns the samples with the reduction *)
+    rs <$ dlist dt n;
+    z  <$ dt;          (* unused *)
+    us <$ dlist dt n;
+    b' <@ B.guess(g ^ x, hyb (g ^ x) k (take n (sigma b)) rs us);
+    return b';
+  }
+}.
+
+module R (B : MAdv) = {
+  proc run(b : bool, k : int, gx gy gz : group) : bool = {
+    var rs, us, b';
+
+    rs <$ dlist dt n;
+    us <$ dlist dt n;
+    b' <@ B.guess(gx, hybR k gx gy gz (take n (sigma b)) rs us);
+    return b';
+  }
+}.
+
+module G0 (B : MAdv) = {
+  proc main(b : bool, k : int) : bool = {
+    var x, y, r;
+
+    x <$ dt;
+    y <$ dt;
+    r <@ R(B).run(b, k, g ^ x, g ^ y, g ^ (x * y));
+    return r;
+  }
+}.
+
+module G1 (B : MAdv) = {
+  proc main(b : bool, k : int) : bool = {
+    var x, y, z, r;
+
+    x <$ dt;
+    y <$ dt;
+    z <$ dt;
+    r <@ R(B).run(b, k, g ^ x, g ^ y, g ^ z);
+    return r;
+  }
+}.
+
+section StepB.
+
+declare module B <: MAdv {-R, -H}.
+
+lemma dpair_dlet :
+     dlet dt (fun (y : exp) => dmap (dlist dt n) (fun (rs : exp list) => (y, rs)))
+   = dt `*` dlist dt n.
+proof. by rewrite dprod_dlet /dmap /(\o). qed.
+
+lemma size_vs b : size (take n (sigma b)) = n.
+proof. by rewrite size_take; smt(ge0_n size_sigma). qed.
+
+equiv G0_H : G0(B).main ~ H(B).main :
+  ={glob B, b, k} /\ 0 <= k{1} < n ==> ={res}.
+proof.
+proc; inline R(B).run.
+swap{1} [8..9] -5.
+seq 1 1 : (={glob B, b, k, x} /\ 0 <= k{1} < n); first by auto.
+seq 2 2 : (={glob B, b, k, x} /\ 0 <= k{1} < n /\ size rs{2} = n
+           /\ (y{1}, rs{1}) = swi k{2} zero (y{2}, rs{2})).
++ rndsem{1} 0; rndsem{2} 0.
+  rnd (sw k{1} zero) (swi k{1} zero).
+  skip => &1 &2 hpre; rewrite !dpair_dlet.
+  have [h1 [h2 h3]] := sw_coupling k{1} zero _; 1: smt().
+  split; 1: by move=> p /h1 ->.
+  move=> _; split; 1: exact h2.
+  move=> _ p /h3 [hin hK]; split; 1: exact hin.
+  move=> _; split; 1: by rewrite hK.
+  move: hin; rewrite supp_dpair /= => sz; smt().
+swap{2} 1 1.
+wp; call (: true); wp; rnd{2}; rnd; skip => /> &1 ge0_k lt_kn sz_rs us _ z _.
+have -> : nth zero rs{1} k{1} - zero = nth zero rs{1} k{1} by ring.
+by rewrite hop0_eq.
+qed.
+
+equiv G1_H : G1(B).main ~ H(B).main :
+  ={glob B, b} /\ k{2} = k{1} + 1 /\ 0 <= k{1} < n ==> ={res}.
+proof.
+proc; inline R(B).run.
+swap{1} 9 -6; swap{1} 10 -5.
+seq 1 1 : (={glob B, b, x} /\ k{2} = k{1} + 1 /\ 0 <= k{1} < n); first by auto.
+seq 2 2 : (={glob B, b, x} /\ k{2} = k{1} + 1 /\ 0 <= k{1} < n /\ size rs{2} = n
+           /\ (y{1}, rs{1}) = swi k{1} zero (y{2}, rs{2})).
++ rndsem{1} 0; rndsem{2} 0.
+  rnd (sw k{1} zero) (swi k{1} zero).
+  skip => &1 &2 hpre; rewrite !dpair_dlet.
+  have [h1 [h2 h3]] := sw_coupling k{1} zero _; 1: smt().
+  split; 1: by move=> p /h1 ->.
+  move=> _; split; 1: exact h2.
+  move=> _ p /h3 [hin hK]; split; 1: exact hin.
+  move=> _; split; 1: by rewrite hK.
+  move: hin; rewrite supp_dpair /= => sz; smt().
+seq 2 2 : (={glob B, b, x} /\ k{2} = k{1} + 1 /\ 0 <= k{1} < n /\ size rs{2} = n
+           /\ (y{1}, rs{1}) = swi k{1} zero (y{2}, rs{2}) /\ size us{2} = n
+           /\ (z{1}, us{1}) = swi k{1} (nth zero (take n (sigma b{1})) k{1}) (z{2}, us{2})).
++ rndsem{1} 0; rndsem{2} 0.
+  rnd (sw k{1} (nth zero (take n (sigma b{1})) k{1}))
+      (swi k{1} (nth zero (take n (sigma b{1})) k{1})).
+  skip => &1 &2 hpre; rewrite !dpair_dlet.
+  have [h1 [h2 h3]] := sw_coupling k{1} (nth zero (take n (sigma b{1})) k{1}) _; 1: smt().
+  split; 1: by move=> p /h1 ->.
+  move=> _; split; 1: exact h2.
+  move=> _ p /h3 [hin hK]; split; 1: exact hin.
+  move=> _; split; 1: by rewrite hK.
+  move: hin; rewrite supp_dpair /= => sz; smt().
+wp; call (: true); wp; skip => /> &1 &2 ge0_k lt_kn sz_rs sz_us.
+have -> : nth zero rs{2} k{1} - zero = nth zero rs{2} k{1} by ring.
+by rewrite hop1_eq.
+qed.
+
+equiv H_MCPA : H(B).main ~ MCPA(B).main : ={glob B, b} /\ k{1} = 0 ==> ={res}.
+proof.
+proc; call (: true); rnd{1}; rnd{1}; rnd; rnd{1}; rnd.
+skip => /> &1 x _ y _ rs; rewrite supp_dlist 1:ge0_n => -[sz_rs _] z _ us _.
+by rewrite hyb0 // size_vs.
+qed.
+
+equiv H_full : H(B).main ~ H(B).main : ={glob B} /\ k{1} = n /\ k{2} = n ==> ={res}.
+proof. by proc; call (: true); auto => />; smt(hyb_full). qed.
+
+end section StepB.
+
+(* -------------------------------------------------------------------- *)
+(* A single DDH distinguisher: pick a hop j in [0, 2n) uniformly.  Hops *)
+(* j < n walk the b = 0 chain, hops j >= n walk the b = 1 chain with the *)
+(* output flipped.                                                       *)
+op jb (j : int) : bool = n <= j.
+op jk (j : int) : int = if n <= j then j - n else j.
+
+module Ravg (B : MAdv) : Adversary = {
+  proc guess(gx gy gz : group) : bool = {
+    var j, r;
+
+    j <$ [0 .. 2 * n - 1];
+    r <@ R(B).run(jb j, jk j, gx, gy, gz);
+    return (r <> jb j);
+  }
+}.
+
+clone Means as Avg with
+  type input  <- int,
+  type output <- bool,
+  op d        <- [0 .. 2 * n - 1].
+
+module W0 (B : MAdv) : Avg.Worker = {
+  proc work(j : int) : bool = {
+    var r;
+
+    r <@ G0(B).main(jb j, jk j);
+    return (r <> jb j);
+  }
+}.
+
+module W1 (B : MAdv) : Avg.Worker = {
+  proc work(j : int) : bool = {
+    var r;
+
+    r <@ G1(B).main(jb j, jk j);
+    return (r <> jb j);
+  }
+}.
+
+section StepC.
+
+declare module B <: MAdv {-R, -H}.
+declare axiom B_ll : islossless B.guess.
+
+lemma DDH0_avg &m :
+  Pr[DDH0(Ravg(B)).main() @ &m : res] = Pr[Avg.Rand(W0(B)).main() @ &m : res.`2].
+proof.
+byequiv => //; proc; inline *.
+swap{1} 6 -5; wp; call (: true); auto.
+qed.
+
+lemma DDH1_avg &m :
+  Pr[DDH1(Ravg(B)).main() @ &m : res] = Pr[Avg.Rand(W1(B)).main() @ &m : res.`2].
+proof.
+byequiv => //; proc; inline *.
+swap{1} 7 -6; wp; call (: true); auto.
+qed.
+
+lemma W0_H j &m : 0 <= j < 2 * n =>
+  Pr[W0(B).work(j) @ &m : res] = Pr[H(B).main(jb j, jk j) @ &m : res <> jb j].
+proof.
+move=> rg_j; byequiv => //; proc*; inline{1} W0(B).work; wp.
+call (G0_H B); auto => />; smt().
+qed.
+
+lemma W1_H j &m : 0 <= j < 2 * n =>
+  Pr[W1(B).work(j) @ &m : res] = Pr[H(B).main(jb j, jk j + 1) @ &m : res <> jb j].
+proof.
+move=> rg_j; byequiv => //; proc*; inline{1} W1(B).work; wp.
+call (G1_H B); auto => />; smt().
+qed.
+
+lemma H_ll : islossless H(B).main.
+proof. by proc; call B_ll; auto; smt(dt_ll dlist_ll). qed.
+
+lemma avg_sum (W <: Avg.Worker) &m :
+  Pr[Avg.Rand(W).main() @ &m : res.`2]
+  = 1%r / (2 * n)%r * bigi predT (fun j => Pr[W.work(j) @ &m : res]) 0 (2 * n).
+proof.
+have Hfin : is_finite (support [0 .. 2 * n - 1]).
++ rewrite is_finiteE; exists (range 0 (2 * n)).
+  by rewrite range_uniq => /= x; rewrite mem_range supp_dinter /#.
+have Huni : forall x, x \in [0 .. 2 * n - 1] =>
+              mu1 [0 .. 2 * n - 1] x = 1%r / (2 * n)%r.
++ by move=> x /supp_dinter1E ->; congr; congr; ring.
+have := Avg.Mean_uni W &m (fun _ _ r => r) (1%r / (2 * n)%r) Huni Hfin => /= ->.
+have supp_range : perm_eq (to_seq (support [0 .. 2 * n - 1])) (range 0 (2 * n)).
++ apply uniq_perm_eq; [exact uniq_to_seq | exact range_uniq |].
+  by move=> x; rewrite mem_to_seq // supp_dinter mem_range /#.
+by rewrite (StdBigop.Bigreal.BRA.eq_big_perm _ _ _ _ supp_range).
+qed.
+
+lemma mcpa_ddh &m :
+    Pr[MCPA(B).main(false) @ &m : res] - Pr[MCPA(B).main(true) @ &m : res]
+  = (2 * n)%r * (Pr[DDH0(Ravg(B)).main() @ &m : res]
+                 - Pr[DDH1(Ravg(B)).main() @ &m : res]).
+proof.
+pose P (b : bool) (k : int) := Pr[H(B).main(b, k) @ &m : res].
+have hP0 : forall k, Pr[H(B).main(false, k) @ &m : res <> false] = P false k.
++ by move=> k; rewrite /P Pr[mu_eq] => // &hr /#.
+have hP1 : forall k, Pr[H(B).main(true, k) @ &m : res <> true] = 1%r - P true k.
++ move=> k; rewrite /P (: 1%r = Pr[H(B).main(true, k) @ &m : true]).
+  + by rewrite eq_sym; byphoare H_ll.
+  have -> : Pr[H(B).main(true, k) @ &m : res <> true]
+          = Pr[H(B).main(true, k) @ &m : !res].
+  + by rewrite Pr[mu_eq] => // &hr /#.
+  by rewrite Pr[mu_not].
+have e0 : P false 0 = Pr[MCPA(B).main(false) @ &m : res].
++ by rewrite /P; byequiv (H_MCPA B).
+have e1 : P true 0 = Pr[MCPA(B).main(true) @ &m : res].
++ by rewrite /P; byequiv (H_MCPA B).
+have en : P false n = P true n.
++ by rewrite /P; byequiv (H_full B).
+have hsum :
+     bigi predT (fun j => Pr[W0(B).work(j) @ &m : res]) 0 (2 * n)
+   - bigi predT (fun j => Pr[W1(B).work(j) @ &m : res]) 0 (2 * n)
+   = Pr[MCPA(B).main(false) @ &m : res] - Pr[MCPA(B).main(true) @ &m : res].
++ rewrite sumrB /=.
+  rewrite (eq_big_seq _ (fun j => Pr[H(B).main(jb j, jk j) @ &m : res <> jb j]
+                                - Pr[H(B).main(jb j, jk j + 1) @ &m : res <> jb j])).
+  + by move=> j /mem_range rg_j /=; rewrite W0_H // W1_H.
+  rewrite (range_cat n) 1,2:#smt:(gt0_n) big_cat.
+  rewrite (eq_big_seq _ (fun j => P false j - P false (j + 1)) (range 0 n)).
+  + move=> j /mem_range rg_j /=; rewrite /jb /jk (: !(n <= j)) 1:/# /=.
+    by rewrite !hP0.
+  rewrite -telescoping_sum 1:ge0_n.
+  rewrite (: n = 0 + n) 1:// range_addl big_map.
+  rewrite (eq_big_seq _ (fun k => P true (k + 1) - P true k) (range 0 (2 * n - n))).
+  + move=> k /mem_range rg_k @/(\o) /=; rewrite /jb /jk (: n <= n + k) 1:/# /=.
+    have -> : n + k - n = k by ring.
+    by rewrite !hP1; ring.
+  have -> : 2 * n - n = n by ring.
+  rewrite -(telescoping_sum_down (P true) 0 n) 1:ge0_n /=.
+  by rewrite -e0 -e1 en; ring.
+rewrite DDH0_avg DDH1_avg (avg_sum (W0(B))) (avg_sum (W1(B))) -hsum.
+field; smt(gt0_n).
+qed.
+
+end section StepC.
+
+(* -------------------------------------------------------------------- *)
+(* Lemma 2.  With m = n + 1 candidates, for every lossless adversary A,  *)
+(*   Pr[A(D_0)] - Pr[A(D_1)] = 2(m-1) * Adv_DDH(Ravg(BP(A))),            *)
+(* for the explicit DDH distinguisher Ravg(BP(A)).                      *)
+section Lemma2.
+
+declare module A <: Adv.
+declare axiom A_ll : islossless A.guess.
+
+lemma BP_ll : islossless BP(A).guess.
+proof. by proc; call A_ll; auto; smt(dt_ll). qed.
+
+lemma product_hiding &m :
+    Pr[D(A).main(false) @ &m : res] - Pr[D(A).main(true) @ &m : res]
+  = (2 * n)%r * (Pr[DDH0(Ravg(BP(A))).main() @ &m : res]
+                 - Pr[DDH1(Ravg(BP(A))).main() @ &m : res]).
+proof.
+have -> : Pr[D(A).main(false) @ &m : res] = Pr[MCPA(BP(A)).main(false) @ &m : res].
++ by byequiv (D_MCPA A).
+have -> : Pr[D(A).main(true) @ &m : res] = Pr[MCPA(BP(A)).main(true) @ &m : res].
++ by byequiv (D_MCPA A).
+exact (mcpa_ddh (BP(A)) BP_ll &m).
+qed.
+
+lemma product_hiding_abs &m :
+    `|Pr[D(A).main(false) @ &m : res] - Pr[D(A).main(true) @ &m : res]|
+  = (2 * n)%r * `|Pr[DDH0(Ravg(BP(A))).main() @ &m : res]
+                  - Pr[DDH1(Ravg(BP(A))).main() @ &m : res]|.
+proof.
+rewrite product_hiding RealOrder.normrM; congr.
+by rewrite RealOrder.ger0_norm //; smt(gt0_n).
+qed.
+
+end section Lemma2.
